@@ -12,10 +12,14 @@ jobs:
   api-tests:
     name: api-tests          # <- this is the status check name the ruleset requires
     runs-on: ubuntu-latest   # GitHub-hosted: PR code never runs on the Azure VM
+    defaults:
+      run:
+        working-directory: backend   # monorepo: backend code lives in backend/
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.11"   # same as the Dockerfile
+          working-directory: backend
       - run: uv sync --locked      # fails if uv.lock is out of date
       - run: uv run pytest -q
