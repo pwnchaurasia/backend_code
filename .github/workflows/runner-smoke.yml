@@ -5,6 +5,7 @@ on:
 permissions:
   contents: read
 
+  
 jobs:
   smoke:
     runs-on: [self-hosted, linux, azure-prod]
