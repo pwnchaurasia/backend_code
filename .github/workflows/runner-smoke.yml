@@ -1,0 +1,17 @@
+name: runner-smoke
+on:
+  workflow_dispatch:          # manual only — never on pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, azure-prod]
+    steps:
+      - name: Who and where am I?
+        run: |
+          echo "user=$(whoami) host=$(hostname)"
+          ip -4 addr show eth0 | grep inet
+          docker version --format 'docker {{.Server.Version}}'
+          docker compose version
