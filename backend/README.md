@@ -1,31 +1,24 @@
-# backend_code
+# backend — notes API (FastAPI + PostgreSQL)
 
-A project created with FastAPI CLI.
-
-## Quick Start
-
-### Start the development server
+Dependencies are managed with **uv** (`pyproject.toml` + `uv.lock`).
 
 ```bash
-uv run fastapi dev
+# local Postgres
+docker run -d --name pg-local -p 5432:5432 \
+  -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=dev postgres:16
+
+cd backend
+uv sync                                    # creates .venv with app + dev deps
+export DATABASE_URL=postgresql+psycopg://dev:dev@localhost:5432/dev
+uv run pytest -q                           # 3 passed
+uv run uvicorn app.main:app --reload       # http://localhost:8000/api/docs
+
+# container, exactly as production runs it
+docker build -t fastapi-demo-api:local --build-arg APP_VERSION=local .
+docker run --rm -p 8000:8000 \
+  -e DATABASE_URL=postgresql+psycopg://dev:dev@host.docker.internal:5432/dev \
+  fastapi-demo-api:local
+curl -s localhost:8000/api/health          # {"status":"ok","version":"local"}
 ```
 
-Visit http://localhost:8000
-
-### Deploy to FastAPI Cloud
-
-Sign up and log in at https://fastapicloud.com, then deploy with:
-
-```bash
-uv run fastapi deploy
-```
-
-## Project Structure
-
-- `main.py` - Your FastAPI application
-- `pyproject.toml` - Project dependencies
-
-## Learn More
-
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [FastAPI Cloud](https://fastapicloud.com)
+Add a package: `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (tests only). Commit `uv.lock`.
