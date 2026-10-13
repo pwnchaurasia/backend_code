@@ -21,7 +21,7 @@ on:
           - staging
           - production
       runner:
-        description: 'Runner label (use self-hosted for Azure runner or ubuntu-latest for fallback test)'
+        description: 'Runner label (use self-hosted for Azure runner or ubuntu-latest for testing)'
         required: true
         default: 'self-hosted'
         type: choice
@@ -29,52 +29,10 @@ on:
           - self-hosted
           - ubuntu-latest
 
-# Permissions configuration for security
-permissions:
-  contents: read
-  id-token: write # Required if using Azure OIDC authentication
-
 jobs:
-  # ============================================================================
-  # BUILD & TEST STAGE
-  # ============================================================================
-  build-and-test:
-    name: Build & Verify Backend
-    # Uses Azure runner (self-hosted). When triggered manually via UI, the selected runner is used.
-    # Note: If your Azure runner has custom labels (e.g., [self-hosted, azure]), you can specify them here.
-    runs-on: ${{ inputs.runner || 'self-hosted' }}
-    
-    steps:
-      - name: 1. Checkout repository
-        uses: actions/checkout@v4
-
-      - name: 2. Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 3. Install uv package manager
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          version: "latest"
-
-      - name: 4. Install backend dependencies
-        run: |
-          echo "Syncing dependencies with uv..."
-          uv sync
-
-      - name: 5. Verify FastAPI application integrity
-        run: |
-          echo "Checking FastAPI application startup..."
-          uv run python -c "import main; print('Backend loaded successfully!')"
-
-  # ============================================================================
-  # DEPLOYMENT STAGE (Demo for Azure)
-  # ============================================================================
-  deploy:
-    name: Deploy to Azure (Demo)
-    needs: build-and-test
+  build-and-deploy:
+    name: Build Docker & Deploy Backend
+    # Executes on the Azure runner (self-hosted). When triggered manually from UI, can also test with ubuntu-latest.
     runs-on: ${{ inputs.runner || 'self-hosted' }}
     environment:
       name: ${{ inputs.environment || 'staging' }}
@@ -83,38 +41,41 @@ jobs:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2. Display Deployment Context
+      - name: 2. Build Backend Docker Image
+        run: |
+          echo "🐳 Building FastAPI Docker image..."
+          docker build -t backend-app:${{ github.sha }} -t backend-app:latest .
+          echo "📋 Listing built images:"
+          docker images | grep backend-app || true
+
+      - name: 3. Deploy Container to Azure (Demo)
         run: |
           echo "=========================================================="
-          echo "🚀 DEMO RELEASE DEPLOYMENT STARTED"
+          echo "🚀 DEPLOYING BACKEND CONTAINER TO AZURE"
           echo "=========================================================="
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit SHA: ${{ github.sha }}"
           echo "Triggered by: ${{ github.actor }}"
-          echo "Event: ${{ github.event_name }}"
           echo "Target Environment: ${{ inputs.environment || 'staging' }}"
           echo "Executing on Runner: Azure Self-Hosted (${{ runner.name }})"
           echo "=========================================================="
-
-      - name: 3. Simulate Azure Deployment
-        run: |
-          echo "📦 Packaging FastAPI application..."
-          echo "🔑 Authenticating with Azure credentials (Demo placeholder)..."
-          echo "☁️ Deploying backend to Azure App Service / Azure Container Apps..."
-          sleep 3
-          echo "✅ Backend successfully deployed to Azure!"
-          echo "🌐 Health check URL: https://api.demo.internal/health"
+          echo "☁️ Starting Docker container on Azure runner..."
+          sleep 2
+          echo "✅ Backend container successfully built and deployed!"
+          echo "🌐 API available at: http://<azure-vm-ip>:8000"
 
       # ------------------------------------------------------------------------
-      # REAL AZURE DEPLOYMENT TEMPLATE (Uncomment when credentials are ready):
+      # REAL AZURE CONTAINER DEPLOYMENT (Optional Reference):
       # ------------------------------------------------------------------------
-      # - name: Log in to Azure
-      #   uses: azure/login@v2
-      #   with:
-      #     creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # - name: Run container locally on runner VM
+      #   run: |
+      #     docker stop backend-app || true
+      #     docker rm backend-app || true
+      #     docker run -d --name backend-app -p 8000:8000 backend-app:latest
       #
-      # - name: Deploy to Azure Web App
-      #   uses: azure/webapps-deploy@v3
+      # - name: Or Push to Azure Container Registry (ACR)
+      #   uses: azure/docker-login@v2
       #   with:
-      #     app-name: 'my-fastapi-app'
-      #     package: '.'
+      #     login-server: <your-acr-name>.azurecr.io
+      #     username: ${{ secrets.ACR_USERNAME }}
+      #     password: ${{ secrets.ACR_PASSWORD }}

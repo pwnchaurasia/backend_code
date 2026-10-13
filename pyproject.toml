@@ -5,3 +5,8 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.142.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+]
