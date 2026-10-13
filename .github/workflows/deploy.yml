@@ -44,7 +44,7 @@ jobs:
       - name: 2. Build Backend Docker Image
         run: |
           echo "🐳 Building FastAPI Docker image..."
-          docker build -t backend-app:${{ github.sha }} -t backend-app:latest .
+          docker build -t backend-app:${{ github.sha }} -t backend-app:latest backend   # monorepo: build context = backend/
           echo "📋 Listing built images:"
           docker images | grep backend-app || true
 
