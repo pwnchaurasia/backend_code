@@ -1,0 +1,165 @@
+name: release
+
+on:
+  push:
+    branches:
+      - "release/[0-9][0-9].[0-9][0-9].[0-9][0-9]"
+  # Re-deploy / rollback: "Run workflow" and pick an existing release/* branch
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      owner: ${{ steps.v.outputs.owner }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - id: v
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          VERSION="${REF_NAME#release/}"
+          if [[ "$REF_NAME" != release/* ]] || [[ ! "$VERSION" =~ ^[0-9]{2}\.(0[1-9]|1[0-2])\.[0-9]{2}$ ]]; then
+            echo "::error::Branch '$REF_NAME' must be release/YY.MM.XX"
+            exit 1
+          fi
+          # push = build new images; manual run = redeploy images that already exist
+          if [ "$EVENT" = "push" ]; then BUILD=true; else BUILD=false; fi
+          {
+            echo "version=$VERSION"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+            echo "build=$BUILD"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Release \`$VERSION\` (build=$BUILD)" >> "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    needs: meta
+    if: needs.meta.outputs.build == 'true'
+    uses: ./.github/workflows/_tests.yml
+
+  build-api:
+    name: Build & push API image
+    needs: [meta, tests]
+    if: needs.meta.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.version }}
+          tags: |
+            ghcr.io/${{ needs.meta.outputs.owner }}/fastapi-demo-api:${{ needs.meta.outputs.version }}
+            ghcr.io/${{ needs.meta.outputs.owner }}/fastapi-demo-api:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Azure VM
+    needs: [meta, build-api]
+    # Run after a successful build, OR on a manual redeploy (build skipped on purpose)
+    if: >-
+      !cancelled() &&
+      needs.meta.result == 'success' &&
+      (needs.build-api.result == 'success' || needs.meta.outputs.build == 'false')
+    runs-on: [self-hosted, linux, azure-prod]
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_URL }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      APP_VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE_OWNER: ${{ needs.meta.outputs.owner }}
+      SITE_ADDRESS: ${{ vars.SITE_ADDRESS }}
+      DEPLOY_DIR: /opt/fastapi-demo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+
+      - name: Render runtime config
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          cp deploy/docker-compose.yml deploy/Caddyfile "$DEPLOY_DIR/"
+          umask 077
+          {
+            echo "APP_VERSION=$APP_VERSION"
+            echo "IMAGE_OWNER=$IMAGE_OWNER"
+            echo "SITE_ADDRESS=$SITE_ADDRESS"
+            echo "DATABASE_URL=$DATABASE_URL"
+          } > "$DEPLOY_DIR/.env"
+
+      - name: Deploy (health-gated, auto-rollback)
+        working-directory: ${{ env.DEPLOY_DIR }}
+        run: |
+          PREV="$(cat CURRENT_VERSION 2>/dev/null || true)"
+          echo "Current: ${PREV:-<none>}  ->  New: $APP_VERSION"
+          docker compose pull
+          if docker compose up -d --remove-orphans --wait --wait-timeout 120; then
+            echo "$APP_VERSION" > CURRENT_VERSION
+            echo "✅ $APP_VERSION is healthy" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::$APP_VERSION failed its health check"
+            docker compose logs --tail 100 api || true
+            if [ -n "$PREV" ]; then
+              echo "↩️ Rolling back to $PREV"
+              sed -i "s/^APP_VERSION=.*/APP_VERSION=$PREV/" .env
+              APP_VERSION="$PREV" docker compose up -d --remove-orphans --wait --wait-timeout 120
+              echo "↩️ Rolled back to $PREV" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 1
+          fi
+
+      - name: Smoke test through Caddy
+        run: |
+          if [[ "$SITE_ADDRESS" == :* ]]; then
+            # Behind Application Gateway (doc 013): Caddy serves plain HTTP on the VM
+            CHECK=(curl -fsS "http://127.0.0.1/api/health")
+          else
+            # Caddy terminates TLS itself: test the real certificate via localhost
+            CHECK=(curl -fsS --resolve "$SITE_ADDRESS:443:127.0.0.1" "https://$SITE_ADDRESS/api/health")
+          fi
+          for i in $(seq 1 24); do
+            if "${CHECK[@]}"; then echo; exit 0; fi
+            echo "waiting for Caddy ($i)..."; sleep 5
+          done
+          echo "::error::Smoke test failed"; exit 1
+
+      - name: Prune old images (keep disk + GHCR pulls small)
+        if: success()
+        run: docker image prune -af --filter "until=168h"
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
