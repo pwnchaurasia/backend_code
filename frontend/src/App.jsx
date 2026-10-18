@@ -9,20 +9,35 @@ export default function App() {
   const [apiVersion, setApiVersion] = useState("…");
   const [error, setError] = useState("");
 
+  // Pure fetch: no state updates in here
+  async function fetchAll() {
+    const [health, list] = await Promise.all([fetch("/api/health"), fetch("/api/notes")]);
+    if (!health.ok || !list.ok) throw new Error(`API error ${health.status}/${list.status}`);
+    return { version: (await health.json()).version, notes: await list.json() };
+  }
+
+  function apply({ version, notes }) {
+    setApiVersion(version);
+    setNotes(notes);
+    setError("");
+  }
+
   async function load() {
     try {
-      const [health, list] = await Promise.all([fetch("/api/health"), fetch("/api/notes")]);
-      if (!health.ok || !list.ok) throw new Error(`API error ${health.status}/${list.status}`);
-      setApiVersion((await health.json()).version);
-      setNotes(await list.json());
-      setError("");
+      apply(await fetchAll());
     } catch (e) {
       setError(e.message);
     }
   }
 
   useEffect(() => {
-    load();
+    let ignore = false; // drop a late response if the component unmounted
+    fetchAll()
+      .then((data) => !ignore && apply(data))
+      .catch((e) => !ignore && setError(e.message));
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   async function addNote(e) {
