@@ -1,5 +1,0 @@
-{$SITE_ADDRESS} {
-	encode gzip
-	reverse_proxy /api/* api:8000
-	respond / "API is up. Frontend arrives in doc 010." 200
-}
