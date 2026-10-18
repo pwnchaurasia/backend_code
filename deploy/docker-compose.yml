@@ -11,7 +11,7 @@ services:
     mem_limit: 300m
 
   web:
-    image: caddy:2-alpine
+    image: ghcr.io/${IMAGE_OWNER}/fastapi-demo-web:${APP_VERSION}
     restart: unless-stopped
     depends_on:
       api:
@@ -22,7 +22,6 @@ services:
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     mem_limit: 100m
